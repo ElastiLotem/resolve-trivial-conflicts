@@ -10,6 +10,7 @@ module Resolution
 
 import           Conflict (Conflict(..))
 import qualified Conflict as Conflict
+import           Data.Either (partitionEithers)
 import qualified Data.Monoid as Monoid
 
 import           Prelude.Compat
@@ -19,17 +20,17 @@ data Resolution
     | Resolution String
     | PartialResolution String
 
-resolveConflict :: Conflict -> Resolution
-resolveConflict conflict@Conflict{..}
-    | cBodyA == cBodyBase = Resolution $ unlines cBodyB
-    | cBodyB == cBodyBase = Resolution $ unlines cBodyA
+resolveSimpleConflict :: Conflict -> [String] -> Resolution
+resolveSimpleConflict conflict@Conflict{..} baseLines
+    | cBodyA == baseLines = Resolution $ unlines cBodyB
+    | cBodyB == baseLines = Resolution $ unlines cBodyA
     | cBodyA == cBodyB = Resolution $ unlines cBodyA
     | matchTop > 0 || matchBottom > 0 =
         PartialResolution $ unlines $
         take matchTop cBodyA ++
         Conflict.prettyLines conflict
         { cBodyA = unmatched cBodyA
-        , cBodyBase = unmatched cBodyBase
+        , cBodyBase = map Left (unmatched baseLines)
         , cBodyB = unmatched cBodyB
         } ++
         takeEnd matchBottom cBodyA
@@ -38,12 +39,28 @@ resolveConflict conflict@Conflict{..}
         match base a b
             | null base = lengthOfCommonPrefix a b
             | otherwise = minimum $ map (lengthOfCommonPrefix base) [a, b]
-        matchTop = match cBodyBase cBodyA cBodyB
+        matchTop = match baseLines cBodyA cBodyB
         revBottom = reverse . drop matchTop
-        matchBottom = match (revBottom cBodyBase) (revBottom cBodyA) (revBottom cBodyB)
+        matchBottom = match (revBottom baseLines) (revBottom cBodyA) (revBottom cBodyB)
         dropEnd count xs = take (length xs - count) xs
         takeEnd count xs = drop (length xs - count) xs
         unmatched xs = drop matchTop $ dropEnd matchBottom xs
+
+resolveConflict :: Conflict -> Resolution
+resolveConflict conflict@Conflict{..} =
+    case partitionEithers resolvedBase of
+    (baseLines, []) -> resolveSimpleConflict conflict baseLines
+    (_, resolutions) | all (isNoResolution . fst) resolutions -> NoResolution
+    _ ->
+        PartialResolution $
+        Conflict.pretty conflict
+        { cBodyBase = map (Left . either id (Conflict.pretty . snd)) resolvedBase
+        }
+    where
+        resolvedBase = (fmap . fmap) resolveBaseConflict cBodyBase
+        resolveBaseConflict x = (resolveConflict x, x)
+        isNoResolution NoResolution = True
+        isNoResolution _ = False
 
 lengthOfCommonPrefix :: Eq a => [a] -> [a] -> Int
 lengthOfCommonPrefix x y = length $ takeWhile id $ zipWith (==) x y

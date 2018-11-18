@@ -5,13 +5,12 @@ module Conflict
     , bodyStrings, setBodyStrings
     , pretty, prettyLines
     , parse
-    , markerPrefix
     ) where
 
 import Control.Monad.State (MonadState, state, evalStateT)
 import Control.Monad.Writer (runWriter, tell)
 import Data.Functor.Identity (Identity(..))
-import Data.List (isPrefixOf)
+import Data.Maybe (fromMaybe)
 
 import Prelude.Compat
 
@@ -23,17 +22,19 @@ data Conflict = Conflict
     , cMarkerB    :: (LineNo, String) -- =======....
     , cMarkerEnd  :: (LineNo, String) -- >>>>>>>....
     , cBodyA      :: [String]
-    , cBodyBase   :: [String]
+    , cBodyBase   :: [Either String Conflict]
     , cBodyB      :: [String]
     } deriving (Show)
 
 -- traversal
 bodyStrings :: Applicative f => (String -> f String) -> Conflict -> f Conflict
 bodyStrings f c@Conflict{..} =
-    mk <$> traverse f cBodyA <*> traverse f cBodyBase <*> traverse f cBodyB
+    mk <$> traverse f cBodyA <*> traverse onBase cBodyBase <*> traverse f cBodyB
     where
         mk bodyA bodyBase bodyB =
             c{cBodyA=bodyA, cBodyBase=bodyBase, cBodyB=bodyB}
+        onBase (Left x) = Left <$> f x
+        onBase (Right x) = Right <$> bodyStrings f x
 
 -- setter:
 setBodyStrings :: (String -> String) -> Conflict -> Conflict
@@ -43,7 +44,7 @@ prettyLines :: Conflict -> [String]
 prettyLines Conflict {..} =
     concat
     [ snd cMarkerA    : cBodyA
-    , snd cMarkerBase : cBodyBase
+    , snd cMarkerBase : (cBodyBase >>= either pure prettyLines)
     , snd cMarkerB    : cBodyB
     , [snd cMarkerEnd]
     ]
@@ -51,12 +52,22 @@ prettyLines Conflict {..} =
 pretty :: Conflict -> String
 pretty = unlines . prettyLines
 
--- '>' -> ">>>>>>>"
-markerPrefix :: Char -> String
-markerPrefix = replicate 7
-
-breakUpToMarker :: MonadState [(LineNo, String)] m => Char -> m [(LineNo, String)]
-breakUpToMarker c = state (break ((markerPrefix c `isPrefixOf`) . snd))
+breakUpToMarker ::
+    MonadState [(LineNo, String)] m =>
+    Char -> Maybe Int -> m [(LineNo, String)]
+breakUpToMarker c mCount =
+    state (break cond)
+    where
+        count = fromMaybe 7 mCount
+        prefix = replicate count c
+        cond (_, line) =
+            pre == prefix && rightCount
+            where
+                (pre, post) = splitAt count line
+                rightCount =
+                    case (mCount, post) of
+                    (Just{}, (x:_)) -> c /= x
+                    _ -> True
 
 readHead :: MonadState [a] m => m (Maybe a)
 readHead = state f
@@ -64,16 +75,20 @@ readHead = state f
         f [] = (Nothing, [])
         f (l:ls) = (Just l, ls)
 
-tryReadUpToMarker :: MonadState [(LineNo, String)] m => Char -> m ([(LineNo, String)], Maybe (LineNo, String))
-tryReadUpToMarker c =
+tryReadUpToMarker ::
+    MonadState [(LineNo, String)] m =>
+    Char -> Maybe Int -> m ([(LineNo, String)], Maybe (LineNo, String))
+tryReadUpToMarker c mCount =
     do
-        ls <- breakUpToMarker c
+        ls <- breakUpToMarker c mCount
         mHead <- readHead
         return (ls, mHead)
 
-readUpToMarker :: MonadState [(LineNo, String)] m => Char -> m ([(LineNo, String)], (LineNo, String))
-readUpToMarker c = do
-    res <- tryReadUpToMarker c
+readUpToMarker ::
+    MonadState [(LineNo, String)] m =>
+    Char -> Maybe Int -> m ([(LineNo, String)], (LineNo, String))
+readUpToMarker c mCount = do
+    res <- tryReadUpToMarker c mCount
     case res of
         (ls, Just h)  -> return (ls, h)
         (ls, Nothing) ->
@@ -85,25 +100,27 @@ readUpToMarker c = do
 
 parseConflict :: MonadState [(LineNo, String)] m => (LineNo, String) -> m Conflict
 parseConflict markerA =
-    do  (linesA   , markerBase) <- readUpToMarker '|'
-        (linesBase, markerB)    <- readUpToMarker '='
-        (linesB   , markerEnd)  <- readUpToMarker '>'
+    do  (linesA   , markerBase) <- readUpToMarker '|' markerCount
+        (linesBase, markerB)    <- readUpToMarker '=' markerCount
+        (linesB   , markerEnd)  <- readUpToMarker '>' markerCount
         return Conflict
             { cMarkerA    = markerA
             , cMarkerBase = markerBase
             , cMarkerB    = markerB
             , cMarkerEnd  = markerEnd
             , cBodyA      = map snd linesA
+            , cBodyBase   = parseFromNumberedLines linesBase
             , cBodyB      = map snd linesB
-            , cBodyBase   = map snd linesBase
             }
+    where
+        markerCount = Just (length (takeWhile (== '<') (snd markerA)))
 
 parseFromNumberedLines :: [(LineNo, String)] -> [Either String Conflict]
 parseFromNumberedLines =
     snd . runWriter . evalStateT loop
     where
         loop =
-            do  (ls, mMarkerA) <- tryReadUpToMarker '<'
+            do  (ls, mMarkerA) <- tryReadUpToMarker '<' Nothing
                 tell $ map (Left . snd) ls
                 case mMarkerA of
                     Nothing -> return ()
