@@ -71,14 +71,19 @@ handleFileResult colorEnable opts fileName (NewContent result newContent)
     | successes == 0 && allGood =
       do  putStrLn $ fileName ++ ": No conflicts, git-adding"
           gitAdd fileName
-    | successes == 0 && reductions == 0 =
+    | successes == 0 && reductions == 0 && modifications == 0 =
       do  putStrLn $ concat
               [ fileName, ": Failed to resolve any of the "
               , show failures, " conflicts" ]
           doDump
-    | successes == 0 =
+    | successes == 0 && reductions > 0 =
       do  putStrLn $ concat
               [ fileName, ": Reduced ", show reductions, " conflicts"]
+          overwrite fileName newContent
+          doDump
+    | successes == 0 && modifications > 0 =
+      do  putStrLn $ concat
+              [ fileName, ": Modified ", show modifications, " conflicts"]
           overwrite fileName newContent
           doDump
     | otherwise =
@@ -100,6 +105,7 @@ handleFileResult colorEnable opts fileName (NewContent result newContent)
             { _resolvedSuccessfully = successes
             , _reducedConflicts = reductions
             , _failedToResolve = failures
+            , _modifiedConflicts = modifications
             } = result
 
 resolve :: ColorEnable -> Options -> FilePath -> IO Result

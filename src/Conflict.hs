@@ -6,14 +6,16 @@ module Conflict
     , pretty, prettyLines
     , parse
     , markerPrefix
+    , Tactic(..), getTactic
     ) where
 
 import Control.Monad.State (MonadState, state, evalStateT)
 import Control.Monad.Writer (runWriter, tell)
 import Data.Functor.Identity (Identity(..))
 import Data.List (isPrefixOf)
-import Generic.Data (Generically1(..))
-import GHC.Generics (Generic1)
+import Generic.Data (Generically(..), Generically1(..))
+import GHC.Generics (Generic, Generic1)
+import Text.Read (readMaybe)
 
 import Prelude.Compat
 
@@ -23,7 +25,8 @@ data Sides a = Sides
     { sideA :: a
     , sideBase :: a
     , sideB :: a
-    } deriving (Functor, Foldable, Traversable, Show, Eq, Ord, Generic1)
+    } deriving (Functor, Foldable, Traversable, Show, Eq, Ord, Generic, Generic1)
+    deriving (Semigroup, Monoid) via Generically (Sides a)
     deriving Applicative via Generically1 Sides
 
 data Conflict = Conflict
@@ -31,6 +34,12 @@ data Conflict = Conflict
     , cMarkerEnd :: (LineNo, String)       -- The ">>>>>>>...." marker at the end of the conflict
     , cBodies    :: Sides [String]
     } deriving (Show)
+
+newtype Tactic = Grow Int deriving (Read, Show, Eq)
+
+getTactic :: Conflict -> Maybe Tactic
+getTactic =
+    readMaybe . dropWhile (== '=') . snd . sideB . cMarkers
 
 -- traversal
 bodies :: Applicative f => (Sides [String] -> f (Sides [String])) -> Conflict -> f Conflict
